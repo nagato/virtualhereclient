@@ -1,4 +1,5 @@
 {
   "name": "Nagato Home Assistant Add-ons",
-  "url": "https://github.com/nagato/virtualhereclient"
+  "url": "https://github.com/nagato/virtualhereclient",
+  "maintainer": "nagato <nate@natewilliams.com>"
 }
