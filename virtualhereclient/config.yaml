@@ -1,0 +1,56 @@
+name: VirtualHere Client
+slug: virtualhereclient
+version: 1.0.0
+description: VirtualHere USB client for Home Assistant. Discovers hubs, attaches specified devices, and exposes them to the host for use by other add-ons.
+url: https://www.virtualhere.com/
+startup: services
+init: false
+arch:
+  - amd64
+  - aarch64
+  - armhf
+  - i386
+
+# Network discovery is often required; keep host networking enabled
+host_network: true
+host_ipc: true
+host_dbus: true
+host_pid: true
+
+# Allow loading kernel modules for vhci-hcd when needed
+kernel_modules: true
+
+# Ensure devices are visible to other add-ons and host
+full_access: true
+apparmor: false
+
+hassio_api: true
+
+# Reduce privileges to the minimum necessary
+privileged:
+  - SYS_MODULE
+  - SYS_ADMIN
+
+schema:
+  usb_devices:
+    - str
+  autofind: bool?
+  auto_use_all: bool?
+  manual_hubs:
+    - str
+  clear_auto_use_rules: bool?
+  client_id: str?
+  prefer_ipv6: bool?
+  language: str?
+  debug: bool?
+
+options:
+  usb_devices: []
+  autofind: true
+  auto_use_all: false
+  manual_hubs: []
+  clear_auto_use_rules: false
+  client_id: ""
+  prefer_ipv6: false
+  language: ""
+  debug: false

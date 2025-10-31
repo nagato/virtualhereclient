@@ -1,0 +1,51 @@
+#!/command/with-contenv bashio
+
+set -euo pipefail
+
+# Build client args from add-on options mapped to client flags
+PREFER_IPV6=false
+LANGUAGE=""
+AUTOFIND=true
+
+if bashio::config.has_value 'prefer_ipv6'; then
+  PREFER_IPV6=$(bashio::config 'prefer_ipv6')
+fi
+if bashio::config.has_value 'language'; then
+  LANGUAGE=$(bashio::config 'language')
+fi
+if bashio::config.has_value 'autofind'; then
+  AUTOFIND=$(bashio::config 'autofind')
+fi
+
+set -- /vhclient/vhclient
+if [ "$PREFER_IPV6" = "true" ]; then
+  set -- "$@" -p
+fi
+if [ -n "$LANGUAGE" ]; then
+  set -- "$@" -q "$LANGUAGE"
+fi
+if [ "$AUTOFIND" != "true" ]; then
+  # Start with auto-find off; runtime loop will also enforce desired state
+  set -- "$@" -e
+fi
+set -- "$@" -n
+
+bashio::log.info "Starting VirtualHere client (background daemon)"
+"$@" || true
+
+# Wait briefly for the client to become ready
+for i in $(seq 1 60); do
+  if /vhclient/vhclient -t "LIST" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+bashio::log.info "VirtualHere client ready; entering monitor loop"
+while true; do
+  if ! /vhclient/vhclient -t "LIST" >/dev/null 2>&1; then
+    bashio::log.warning "VirtualHere client not responding; exiting to trigger supervised restart"
+    exit 1
+  fi
+  sleep 10
+done

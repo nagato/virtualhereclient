@@ -1,0 +1,216 @@
+#!/command/with-contenv bashio
+
+set -euo pipefail
+
+DEBUG=false
+if bashio::config.has_value 'debug'; then
+  DEBUG=$(bashio::config 'debug')
+fi
+
+FIRST_RUN=true
+
+wait_for_client() {
+  local tries=0
+  local max_tries=60
+  while ! /vhclient/vhclient -t "LIST" >/dev/null 2>&1; do
+    tries=$((tries+1))
+    if [ "$tries" -ge "$max_tries" ]; then
+      bashio::log.warning "VirtualHere client not ready after ${max_tries} checks; continuing to wait..."
+      tries=0
+    fi
+    sleep 2
+  done
+}
+
+apply_autofind() {
+  local desired_af=true
+  if bashio::config.has_value 'autofind'; then
+    desired_af=$(bashio::config 'autofind')
+  fi
+
+  # Detect current state from LIST output
+  local current_af
+  if /vhclient/vhclient -t "LIST" >/dev/null 2>&1; then
+    if /vhclient/vhclient -t "LIST" 2>&1 | grep -qi 'Auto-Find currently on'; then
+      current_af=true
+    else
+      current_af=false
+    fi
+  else
+    current_af="unknown"
+  fi
+
+  if [ "$current_af" = "$desired_af" ]; then
+    [ "$DEBUG" = "true" ] && bashio::log.debug "Auto-Find already ${current_af}"
+    return 0
+  fi
+
+  if [ "$desired_af" = "true" ]; then
+    /vhclient/vhclient -t "AUTO FIND,ON" >/dev/null 2>&1 || true
+    bashio::log.info "Auto-Find enabled"
+  else
+    /vhclient/vhclient -t "AUTO FIND,OFF" >/dev/null 2>&1 || true
+    bashio::log.info "Auto-Find disabled"
+  fi
+}
+
+get_device_list() {
+  /vhclient/vhclient -t "LIST" 2>&1 || true
+}
+
+apply_manual_hubs() {
+  # Add manually specified hubs if not already present
+  local cfg curr
+  if ! bashio::config.has_value 'manual_hubs'; then
+    return 0
+  fi
+  cfg=$(bashio::config 'manual_hubs[]' | sort | uniq)
+  curr=$(/vhclient/vhclient -t "MANUAL HUB LIST" 2>&1 || true)
+  for hub in $cfg; do
+    if echo "$curr" | grep -Fq "$hub"; then
+      [ "$DEBUG" = "true" ] && bashio::log.debug "Manual hub already present: $hub"
+      continue
+    fi
+    if out=$(/vhclient/vhclient -t "MANUAL HUB ADD,${hub}" 2>&1); then
+      bashio::log.info "Added manual hub: ${hub}"
+      [ "$DEBUG" = "true" ] && bashio::log.debug "MANUAL HUB ADD output: ${out}"
+    else
+      bashio::log.warning "Failed to add manual hub ${hub}: ${out}"
+    fi
+  done
+}
+
+apply_auto_use_all() {
+  local desired=false
+  if bashio::config.has_value 'auto_use_all'; then
+    desired=$(bashio::config 'auto_use_all')
+  fi
+
+  # Detect current state from LIST output
+  local current
+  if /vhclient/vhclient -t "LIST" >/dev/null 2>&1; then
+    if /vhclient/vhclient -t "LIST" 2>&1 | grep -qi 'Auto-Use All currently on'; then
+      current=true
+    else
+      current=false
+    fi
+  else
+    current="unknown"
+  fi
+
+  if [ "$current" = "$desired" ]; then
+    [ "$DEBUG" = "true" ] && bashio::log.debug "Auto-Use All already ${current}"
+    return 0
+  fi
+
+  if [ "$desired" = "true" ]; then
+    # Prefer explicit ON; fallback to bare command for older clients
+    if out=$(/vhclient/vhclient -t "AUTO USE ALL,ON" 2>&1 || /vhclient/vhclient -t "AUTO USE ALL" 2>&1); then
+      bashio::log.info "Enabled Auto-Use All"
+      [ "$DEBUG" = "true" ] && bashio::log.debug "AUTO USE ALL output: ${out}"
+    else
+      bashio::log.warning "Failed to enable Auto-Use All: ${out}"
+    fi
+  else
+    # Prefer explicit OFF; fallback to CLEAR ALL as last resort
+    if out=$(/vhclient/vhclient -t "AUTO USE ALL,OFF" 2>&1 || /vhclient/vhclient -t "AUTO USE CLEAR ALL" 2>&1); then
+      bashio::log.info "Disabled Auto-Use All"
+      [ "$DEBUG" = "true" ] && bashio::log.debug "AUTO USE ALL output: ${out}"
+    else
+      bashio::log.warning "Failed to disable Auto-Use All: ${out}"
+    fi
+  fi
+}
+
+apply_clear_auto_use_rules_once() {
+  # Clear auto-use rules on first run if requested
+  local clear=false
+  if bashio::config.has_value 'clear_auto_use_rules'; then
+    clear=$(bashio::config 'clear_auto_use_rules')
+  fi
+  if [ "$clear" = "true" ] && [ "$FIRST_RUN" = "true" ]; then
+    if out=$(/vhclient/vhclient -t "AUTO USE CLEAR ALL" 2>&1); then
+      bashio::log.info "Cleared all Auto-Use rules"
+      [ "$DEBUG" = "true" ] && bashio::log.debug "AUTO USE CLEAR ALL output: ${out}"
+    else
+      bashio::log.warning "Failed to clear Auto-Use rules: ${out}"
+    fi
+  fi
+}
+
+apply_use_devices() {
+  local devs state_dir list_out dev
+  state_dir="/run/vhclient/devices"
+  mkdir -p "${state_dir}" || true
+  list_out=$(get_device_list)
+
+  if bashio::config.has_value 'usb_devices'; then
+    devs=$(bashio::config 'usb_devices[]' | sort | uniq)
+    for dev in $devs; do
+      # Clear state if device not present in LIST
+      if ! echo "${list_out}" | grep -Fq "${dev}"; then
+        rm -f "${state_dir}/$(echo "${dev}" | tr '/ ' '__')" 2>/dev/null || true
+        bashio::log.info "Device ${dev} not visible yet; will retry later"
+        continue
+      fi
+
+      # Skip if already in-use according to LIST
+      if echo "${list_out}" | grep -F "${dev}" | grep -q "In-use by you"; then
+        [ "$DEBUG" = "true" ] && bashio::log.debug "Device ${dev} already in-use; skipping USE"
+        # Mark as attached to avoid duplicate attempts across loops
+        touch "${state_dir}/$(echo "${dev}" | tr '/ ' '__')" || true
+        continue
+      fi
+
+      # Skip if we already attached successfully
+      if [ -f "${state_dir}/$(echo "${dev}" | tr '/ ' '__')" ]; then
+        [ "$DEBUG" = "true" ] && bashio::log.debug "Skipping USE for ${dev}; already attached"
+        continue
+      fi
+
+      bashio::log.info "Attempting to USE device: ${dev}"
+      if out=$(/vhclient/vhclient -t "USE,${dev}" 2>&1); then
+        [ "$DEBUG" = "true" ] && bashio::log.debug "USE output: ${out}"
+        # Mark as attached when command succeeded
+        touch "${state_dir}/$(echo "${dev}" | tr '/ ' '__')" || true
+        bashio::log.info "Successfully attached ${dev}"
+        # Give the kernel a moment to enumerate, then re-LIST to show mapped tty if available
+        sleep 1
+        attach_list=$(get_device_list)
+        mapped_line=$(echo "${attach_list}" | grep -F "${dev}" || true)
+        if [ -n "${mapped_line}" ]; then
+          bashio::log.info "Device mapping: ${mapped_line}"
+        fi
+      else
+        bashio::log.warning "USE failed for ${dev}: ${out}"
+        list_devices
+      fi
+    done
+  fi
+}
+
+list_devices() {
+  if out=$(/vhclient/vhclient -t "LIST" 2>&1); then
+    bashio::log.info "Device list:\n${out}"
+  else
+    bashio::log.warning "LIST failed: ${out}"
+  fi
+}
+
+bashio::log.info "Starting VirtualHere rule applier loop"
+
+while true; do
+  wait_for_client
+  apply_autofind
+  apply_manual_hubs
+  if [ "$FIRST_RUN" = "true" ]; then
+    list_devices
+    FIRST_RUN=false
+  elif [ "$DEBUG" = "true" ]; then
+    list_devices
+  fi
+  apply_clear_auto_use_rules_once
+  apply_auto_use_all
+  apply_use_devices
+  sleep 30
+done
