@@ -3,7 +3,7 @@ slug: virtualhereclient
 version: 1.0.2
 description: VirtualHere USB client for Home Assistant. Discovers hubs, attaches specified devices, and exposes them to the host for use by other add-ons.
 url: https://www.virtualhere.com/
-maintainer: nagato <nate@natewilliams.com>
+maintainer: nagato <nagato@users.noreply.github.com>
 startup: services
 init: false
 arch:
