@@ -1,6 +1,6 @@
 name: VirtualHere Client
 slug: virtualhereclient
-version: 1.0.0
+version: 1.0.1
 description: VirtualHere USB client for Home Assistant. Discovers hubs, attaches specified devices, and exposes them to the host for use by other add-ons.
 url: https://www.virtualhere.com/
 startup: services
@@ -15,7 +15,6 @@ arch:
 host_network: true
 host_ipc: true
 host_dbus: true
-host_pid: true
 
 # Allow loading kernel modules for vhci-hcd when needed
 kernel_modules: true
